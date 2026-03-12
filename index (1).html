@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Swan Jump</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: black;
+      color: pink;
+      font-family: monospace;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      user-select: none;
+    }
+
+    h1 { font-size: 20px; margin-bottom: 6px; }
+    .tagline { font-size: 11px; color: #ff6688; opacity: 0.6; margin-bottom: 24px; }
+
+    /* ── Game canvas ── */
+    .game-wrap {
+      position: relative;
+      width: 560px;
+      max-width: 100%;
+    }
+
+    #gameCanvas {
+      background: #0a0008;
+      border: 1px solid #ff69b433;
+      border-radius: 12px;
+      display: block;
+      width: 100%;
+      cursor: pointer;
+    }
+
+    /* ── Score ── */
+    .scoreboard {
+      display: flex;
+      justify-content: space-between;
+      padding: 10px 4px 0;
+      font-size: 12px;
+      color: #ff99aa;
+    }
+
+    .scoreboard span { opacity: 0.7; }
+    .scoreboard span b { color: pink; opacity: 1; }
+
+    /* ── Jump button ── */
+    .jump-btn {
+      margin-top: 16px;
+      background: #1a0010;
+      border: 1px solid #ff69b4;
+      border-radius: 10px;
+      color: pink;
+      font-family: monospace;
+      font-size: 13px;
+      padding: 14px 40px;
+      cursor: pointer;
+      transition: background 0.15s, transform 0.1s;
+      width: 100%;
+      max-width: 560px;
+      letter-spacing: 0.05em;
+    }
+
+    .jump-btn:hover   { background: #2a0018; }
+    .jump-btn:active  { transform: scale(0.97); }
+
+    .instructions {
+      margin-top: 10px;
+      font-size: 10px;
+      color: #ff6688;
+      opacity: 0.45;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>Swan Jump</h1>
+  <p class="tagline">jump over the other swans. don't get hit.</p>
+
+  <div class="game-wrap">
+    <canvas id="gameCanvas" width="560" height="200"></canvas>
+    <div class="scoreboard">
+      <span>score: <b id="scoreDisplay">0</b></span>
+      <span>best: <b id="bestDisplay">0</b></span>
+    </div>
+  </div>
+
+  <button class="jump-btn" id="jumpBtn">[ jump 🦢 ]</button>
+  <p class="instructions">spacebar, click the canvas, or tap the button to jump</p>
+
+  <script>
+    const canvas  = document.getElementById("gameCanvas");
+    const ctx     = canvas.getContext("2d");
+    const W = canvas.width;
+    const H = canvas.height;
+
+    // ── colours ──
+    const C = {
+      bg:     "#0a0008",
+      water:  "#1a0018",
+      wave:   "#ff69b433",
+      player: "#ffb3c1",
+      enemy:  "#ff4488",
+      text:   "#ff99aa",
+      ground: "#2a001a",
+    };
+
+    // ── game state ──
+    let state     = "idle";   // idle | playing | dead
+    let score     = 0;
+    let best      = 0;
+    let frame     = 0;
+    let speed     = 3.5;
+    let animFrame = null;
+
+    // ── player ──
+    const GROUND_Y = H - 50;
+    const player = {
+      x: 80,
+      y: GROUND_Y,
+      vy: 0,
+      jumping: false,
+      frameIdx: 0,
+      frameTick: 0,
+    };
+
+    // ── obstacles ──
+    let obstacles = [];
+    let spawnTimer = 0;
+    let spawnInterval = 90;
+
+    // ── swan ASCII frames (drawn as text on canvas) ──
+    // Player frames — walking cycle
+    const playerFrames = [
+`   ___
+,_/ _,,
+| \\( \\|
+|\\_  \\\\
+(_\\_) \\
+ \\ ~=- /`,
+`   ___
+,_/ _,,
+| \\( \\|
+ \\_  \\\\
+(_\\_) /
+ \\ ~=- /`,
+    ];
+
+    // Enemy — slightly different pose
+    const enemyFrame =
+`   ___
+,_/ _,,
+| \\( \\|
+|\\_  \\\\
+(_\\_) \\
+ \\ ~=- /`;
+
+    function resetGame() {
+      score       = 0;
+      frame       = 0;
+      speed       = 3.5;
+      obstacles   = [];
+      spawnTimer  = 0;
+      spawnInterval = 90;
+      player.y    = GROUND_Y;
+      player.vy   = 0;
+      player.jumping = false;
+      player.frameIdx = 0;
+      player.frameTick = 0;
+      document.getElementById("scoreDisplay").textContent = "0";
+    }
+
+    function jump() {
+      if (state === "idle") {
+        state = "playing";
+        resetGame();
+        if (animFrame) cancelAnimationFrame(animFrame);
+        loop();
+        return;
+      }
+      if (state === "dead") {
+        state = "playing";
+        resetGame();
+        return;
+      }
+      if (!player.jumping) {
+        player.vy = -11;
+        player.jumping = true;
+      }
+    }
+
+    function spawnObstacle() {
+      // varying heights: ground level or slightly taller
+      const tall = Math.random() < 0.3;
+      obstacles.push({
+        x: W + 10,
+        w: 55,
+        h: tall ? 80 : 55,
+        frameIdx: 0,
+        frameTick: 0,
+      });
+    }
+
+    function drawSwanText(lines, x, y, color, size) {
+      ctx.fillStyle = color;
+      ctx.font = `${size}px monospace`;
+      ctx.textBaseline = "top";
+      lines.forEach((line, i) => {
+        ctx.fillText(line, x, y + i * (size + 1));
+      });
+    }
+
+    function drawGround() {
+      // ground strip
+      ctx.fillStyle = C.ground;
+      ctx.fillRect(0, GROUND_Y + 38, W, H - GROUND_Y - 38);
+
+      // wave line
+      ctx.strokeStyle = "#ff69b466";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      const waveY = GROUND_Y + 40;
+      for (let wx = 0; wx < W; wx += 4) {
+        const wy = waveY + Math.sin((wx + frame * 2) * 0.08) * 2;
+        wx === 0 ? ctx.moveTo(wx, wy) : ctx.lineTo(wx, wy);
+      }
+      ctx.stroke();
+
+      // wave text
+      ctx.fillStyle = "#ff69b433";
+      ctx.font = "10px monospace";
+      let wt = "~^~^~^~^~^~^~^~^~^~^~^~^~^~^~^~^~^~^~^~^~^~^~^~^~^~^~^~^~^~^~^~^~^~^~^";
+      // scroll the wave text
+      const offset = (frame * 1.5) % 14;
+      ctx.fillText(wt, -offset, GROUND_Y + 36);
+    }
+
+    function drawPlayer() {
+      const lines = playerFrames[player.frameIdx].split("\n");
+      const size  = 11;
+      const drawY = player.y - lines.length * (size + 1) + 4;
+      drawSwanText(lines, player.x - 10, drawY, C.player, size);
+    }
+
+    function drawObstacle(obs) {
+      const lines = enemyFrame.split("\n");
+      const size  = 11;
+      const drawY = GROUND_Y - lines.length * (size + 1) + 4;
+      drawSwanText(lines, obs.x, drawY, C.enemy, size);
+    }
+
+    function drawScore() {
+      ctx.fillStyle = C.text;
+      ctx.font = "11px monospace";
+      ctx.textBaseline = "top";
+      ctx.fillText(`score: ${score}`, W - 100, 12);
+    }
+
+    function drawIdle() {
+      ctx.fillStyle = C.bg;
+      ctx.fillRect(0, 0, W, H);
+      drawGround();
+
+      // draw player standing
+      const lines = playerFrames[0].split("\n");
+      const size  = 11;
+      drawSwanText(lines, player.x - 10, GROUND_Y - lines.length * (size + 1) + 4, C.player, size);
+
+      // prompt
+      ctx.fillStyle = "#ff99aa";
+      ctx.font = "13px monospace";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText("press space / tap jump to start", W / 2, H / 2 - 10);
+      ctx.font = "10px monospace";
+      ctx.fillStyle = "#ff6688";
+      ctx.fillText("jump over the swans without getting hit", W / 2, H / 2 + 10);
+      ctx.textAlign = "left";
+    }
+
+    function drawDead() {
+      ctx.fillStyle = "#ff446688";
+      ctx.fillRect(0, 0, W, H);
+
+      ctx.fillStyle = "white";
+      ctx.font = "bold 16px monospace";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText("honked. 🦢", W / 2, H / 2 - 18);
+      ctx.font = "12px monospace";
+      ctx.fillStyle = "#ffccdd";
+      ctx.fillText(`score: ${score}`, W / 2, H / 2 + 6);
+      ctx.font = "10px monospace";
+      ctx.fillStyle = "#ff99aa";
+      ctx.fillText("tap jump to try again", W / 2, H / 2 + 26);
+      ctx.textAlign = "left";
+    }
+
+    function checkCollision() {
+      const pLeft  = player.x;
+      const pRight = player.x + 40;
+      const pTop   = player.y - 50;
+      const pBot   = player.y + 4;
+
+      for (const obs of obstacles) {
+        const oLeft  = obs.x + 6;
+        const oRight = obs.x + 40;
+        const oTop   = GROUND_Y - obs.h;
+        const oBot   = GROUND_Y + 4;
+
+        if (pRight > oLeft && pLeft < oRight && pBot > oTop && pTop < oBot) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    function loop() {
+      frame++;
+      ctx.fillStyle = C.bg;
+      ctx.fillRect(0, 0, W, H);
+      drawGround();
+
+      if (state === "playing") {
+        // physics
+        player.vy += 0.55;
+        player.y  += player.vy;
+        if (player.y >= GROUND_Y) {
+          player.y = GROUND_Y;
+          player.vy = 0;
+          player.jumping = false;
+        }
+
+        // animate walk
+        player.frameTick++;
+        if (player.frameTick > 8) {
+          player.frameTick = 0;
+          player.frameIdx  = (player.frameIdx + 1) % playerFrames.length;
+        }
+
+        // spawn obstacles
+        spawnTimer++;
+        if (spawnTimer >= spawnInterval) {
+          spawnObstacle();
+          spawnTimer = 0;
+          spawnInterval = Math.max(55, spawnInterval - 1);
+        }
+
+        // move & draw obstacles
+        obstacles = obstacles.filter(o => o.x > -80);
+        for (const obs of obstacles) {
+          obs.x -= speed;
+          drawObstacle(obs);
+        }
+
+        drawPlayer();
+        drawScore();
+
+        // score
+        if (frame % 6 === 0) {
+          score++;
+          if (score > best) best = score;
+          document.getElementById("scoreDisplay").textContent = score;
+          document.getElementById("bestDisplay").textContent  = best;
+        }
+
+        // speed up over time
+        if (frame % 300 === 0) speed = Math.min(speed + 0.4, 9);
+
+        // collision
+        if (checkCollision()) {
+          state = "dead";
+          drawDead();
+          animFrame = requestAnimationFrame(loop);
+          return;
+        }
+
+      } else if (state === "dead") {
+        // keep drawing last frame frozen
+        for (const obs of obstacles) drawObstacle(obs);
+        drawPlayer();
+        drawDead();
+      }
+
+      animFrame = requestAnimationFrame(loop);
+    }
+
+    // ── input ──
+    document.addEventListener("keydown", e => {
+      if (e.code === "Space" || e.key === " ") { e.preventDefault(); jump(); }
+    });
+
+    canvas.addEventListener("click",   jump);
+    canvas.addEventListener("touchstart", e => { e.preventDefault(); jump(); }, { passive: false });
+    document.getElementById("jumpBtn").addEventListener("click", jump);
+
+    // start on idle screen
+    drawIdle();
+    // gentle idle animation
+    setInterval(() => {
+      if (state === "idle") drawIdle();
+    }, 500);
+  </script>
+
+</body>
+</html>
